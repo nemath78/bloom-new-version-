@@ -5,6 +5,7 @@ const multer = require('multer');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const cron = require('node-cron');
 const db = require('./db');
 
 const app = express();
@@ -98,6 +99,13 @@ app.get('/api/me', (req, res) => {
   const user = db.findUserById(req.session.userId);
   if (!user) return res.json({ user: null });
   res.json({ user: { id: user.id, email: user.email, name: user.name } });
+});
+
+// Used by the client to tag the device's OneSignal subscription with the
+// same id the rest of the app uses (real user id or guest id), so a push
+// can be targeted at one person later if needed.
+app.get('/api/me/ownerid', (req, res) => {
+  res.json({ ownerId: ownerId(req) });
 });
 
 // ============================================================
@@ -393,9 +401,104 @@ app.post('/api/chat', async (req, res) => {
   }
 });
 
+// ============================================================
+// COMMUNITY CONTENT EXPIRY (24 hours)
+// ------------------------------------------------------------
+// Group chat messages and the shared/community gallery are meant to be
+// ephemeral, so anything older than 24h is deleted on a schedule —
+// including the image file on disk, not just its database record.
+//
+// This reuses the existing per-owner removal functions in db.js
+// (removeCommunityMessage / removeCommunityGalleryItem), calling them
+// with each item's own ownerId — the same check the delete routes
+// above already perform — so no changes to db.js are required.
+// ============================================================
+const COMMUNITY_TTL_MS = 24 * 60 * 60 * 1000;
+
+function purgeExpiredCommunityContent() {
+  const cutoff = Date.now() - COMMUNITY_TTL_MS;
+
+  const messages = db.getCommunityMessages();
+  messages
+    .filter(m => m.ts < cutoff)
+    .forEach(m => db.removeCommunityMessage(m.id, m.ownerId));
+
+  const gallery = db.getCommunityGallery();
+  gallery
+    .filter(item => new Date(item.uploadedAt).getTime() < cutoff)
+    .forEach(item => {
+      const removed = db.removeCommunityGalleryItem(item.id, item.ownerId);
+      if (removed) fs.unlink(path.join(UPLOAD_DIR, removed.filename), () => {});
+    });
+}
+
+// Run on boot (in case the server was down for a while) and then every
+// 15 minutes. node-cron's "*/15 * * * *" reads as "every 15 minutes".
+purgeExpiredCommunityContent();
+cron.schedule('*/15 * * * *', purgeExpiredCommunityContent);
+
+// ============================================================
+// PUSH NOTIFICATIONS — daily engagement nudge via OneSignal
+// ------------------------------------------------------------
+// Requires ONESIGNAL_APP_ID and ONESIGNAL_API_KEY as environment
+// variables (from onesignal.com → Settings → Keys & IDs). Without them
+// this job simply logs a note and does nothing — the rest of the app
+// is unaffected.
+//
+// Sends to the "Subscribed Users" segment (everyone who has the app
+// installed and accepted notifications), which is the simplest option.
+// To target one specific person instead, use `include_aliases:
+// { external_id: [ownerId] }` — the client already logs devices in
+// under that id via OneSignal.login(ownerId).
+// ============================================================
+const ENGAGEMENT_MESSAGES = [
+  'I hope you are okay? >.<',
+  'How are you doing today? 🌸',
+  'Just checking in on you and baby 💛',
+  'Got a minute? Your Bloom timeline is waiting for you.',
+  'Remember to drink some water today 💧',
+];
+
+async function sendEngagementPush() {
+  const appId = process.env.ONESIGNAL_APP_ID;
+  const apiKey = process.env.ONESIGNAL_API_KEY;
+  if (!appId || !apiKey) {
+    console.log('Skipping push notification — ONESIGNAL_APP_ID / ONESIGNAL_API_KEY not set.');
+    return;
+  }
+
+  const message = ENGAGEMENT_MESSAGES[Math.floor(Math.random() * ENGAGEMENT_MESSAGES.length)];
+
+  try {
+    const res = await fetch('https://onesignal.com/api/v1/notifications', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Basic ${apiKey}`
+      },
+      body: JSON.stringify({
+        app_id: appId,
+        included_segments: ['Subscribed Users'],
+        headings: { en: 'Bloom 🌸' },
+        contents: { en: message }
+      })
+    });
+    if (!res.ok) console.error('OneSignal push failed:', res.status, await res.text());
+  } catch (err) {
+    console.error('OneSignal push error:', err.message);
+  }
+}
+
+// Every day at 6:00 PM server time. Adjust the cron expression to taste —
+// e.g. '0 9,18 * * *' for twice a day.
+cron.schedule('0 18 * * *', sendEngagementPush);
+
 app.listen(PORT, () => {
   console.log(`Bloom server running at http://localhost:${PORT}`);
   if (!process.env.OPENAI_API_KEY && !process.env.ANTHROPIC_API_KEY) {
     console.log('Note: no AI key set — chat uses built-in tips. See README to enable live AI.');
+  }
+  if (!process.env.ONESIGNAL_APP_ID || !process.env.ONESIGNAL_API_KEY) {
+    console.log('Note: no OneSignal keys set — push notifications will not send. See README.');
   }
 });
