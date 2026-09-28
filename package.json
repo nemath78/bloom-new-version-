@@ -1,0 +1,25 @@
+{
+  "name": "bloom",
+  "version": "3.0.0",
+  "description": "A pregnancy companion app with gallery, timeline, and wellness chat",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@capacitor/android": "^8.5.2",
+    "@capacitor/cli": "^8.5.2",
+    "@capacitor/core": "^8.5.2",
+    "@capacitor/geolocation": "^8.0.0",
+    "@capacitor-community/media": "^9.0.0",
+    "@onesignal/capacitor-plugin": "^1.0.0",
+    "bcryptjs": "^2.4.3",
+    "express": "^4.19.2",
+    "express-session": "^1.18.0",
+    "multer": "^1.4.5-lts.1",
+    "node-cron": "^3.0.3"
+  },
+  "devDependencies": {
+    "@capacitor/assets": "^3.0.5"
+  }
+}

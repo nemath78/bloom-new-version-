@@ -1,0 +1,9 @@
+{
+  "appId": "com.bloom.app",
+  "appName": "Bloom by Nemath",
+  "webDir": "public",
+  "server": {
+    "url": "https://bloom-by-nemathh.onrender.com",
+    "cleartext": true
+  }
+}
